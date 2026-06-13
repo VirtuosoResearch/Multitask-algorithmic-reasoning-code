@@ -1,4 +1,4 @@
-# Project code on multitask algorithmic reasoning
+# Efficiently Learning Branching Networks for Multitask Algorithmic Reasoning
 
 This repository contains code for multitask algorithmic reasoning experiments on the CLRS benchmark and text-based graph tasks. We propose branching neural networks for multitask algorithmic reasoning by dividing algorithms into separate branches. This can be applied on top of base models, including GNNs or LLMs with low-rank adapters. 
 
