@@ -102,6 +102,8 @@ class Sampler(abc.ABC):
       mat =  self._path_graph(n=n, **kwargs)
     elif self._graph_generator == 'tree':
       mat =  self._tree_graph(n=n, **kwargs)
+    elif self._graph_generator == 'star':
+      mat = self._star_graph(n=n, **kwargs)
     elif self._graph_generator == 'complete':
       mat = np.ones((n,n))
     else:
@@ -194,6 +196,22 @@ class Sampler(abc.ABC):
     # make symmetric
     mat = mat + mat.T
     mat = mat.astype(bool).astype(int)
+    return mat
+
+  def _star_graph(self, n, center=0, shuffle_labels=False, *args, **kwargs):
+    """Undirected star graph, optionally relabeled for every sample."""
+    n = self._select_parameter(n)
+    if n < 2:
+      raise ValueError(f'Cannot generate a star graph of size {n}.')
+    if not 0 <= center < n:
+      raise ValueError(f'Star center must be in [0, {n - 1}], got {center}.')
+    mat = np.zeros((n, n), dtype=int)
+    leaves = np.arange(n) != center
+    mat[center, leaves] = 1
+    mat[leaves, center] = 1
+    if shuffle_labels:
+      permutation = self._rng.permutation(n)
+      mat = mat[np.ix_(permutation, permutation)]
     return mat
 
 
@@ -296,4 +314,3 @@ SAMPLERS = {
     'eccentricity': BfsSampler,
     # 'eccentricity_path': BfsSampler,
 }
-

@@ -13,7 +13,10 @@ import os
 from torch_geometric.data import Data, Dataset, Batch
 import multiprocessing as mp
 from collections import defaultdict
-from huggingface_hub import hf_hub_download
+try:
+    from huggingface_hub import hf_hub_download
+except ImportError:
+    hf_hub_download = None
 import zipfile
 import math
 
@@ -88,6 +91,13 @@ def load_dataset(algorithm, split, local_dir):
     
     # check if the dataset is already downloaded
     if not __dataset_available(algorithm, split, local_dir):
+        if hf_hub_download is None:
+            raise ImportError(
+                "huggingface_hub is required only to download SALSA-CLRS "
+                "datasets. Install it with `pip install huggingface-hub`, or "
+                "use generated graph data such as --graph_topology star "
+                "--num_nodes N."
+            )
         logger.info(f"Downloading dataset for algorithm '{algorithm}'...")
         hf_hub_download(repo_id="SALSA-CLRS/SALSA-CLRS", filename=f"{algorithm}.zip", repo_type="dataset", local_dir = local_dir, local_dir_use_symlinks=False)
 
@@ -587,5 +597,4 @@ class SALSACLRSDataModule(pl.LightningDataModule):
         kwargs["num_workers"] = 0 # we don't want to use multiprocessing for testing as there have been problems with shared memory
         return [self.dataloader(test_dataset, shuffle=False, **kwargs) for test_dataset in self.test_datasets]
     
-
 

@@ -26,6 +26,13 @@ _C.MODEL.GRU.TASK_WISE = False
 _C.MODEL.DECODER_USE_LAST_HIDDEN = False
 _C.MODEL.PROCESSOR_USE_LAST_HIDDEN = False
 
+# Single-pass mode: instead of unrolling the algorithm for T steps, run a fixed
+# number of message-passing rounds once and predict the whole per-node/-edge
+# label trajectory (length TRACE_LEN) in one shot (multi-label node
+# classification). Used by star_graph_experiment.py.
+_C.MODEL.SINGLE_PASS = False
+_C.MODEL.TRACE_LEN = 0
+
 # -----------------------------------------------------------------------------
 # Training
 

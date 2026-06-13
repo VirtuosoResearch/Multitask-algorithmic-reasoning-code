@@ -15,6 +15,7 @@ from core.module import SALSACLRSModel
 from core.config import load_cfg
 from core.utils import NaNException
 from data_utils.data_loader import CLRSData, CLRSDataset, CLRSDataModule
+from data_utils.utils import GRAPH_TOPOLOGIES
 import numpy as np
 
 logger.remove()
@@ -93,7 +94,20 @@ if __name__ == '__main__':
     parser.add_argument("--cfg", type=str, required=True, help="Path to config file")
     # datasets
     parser.add_argument("--algorithm", type=str, required=True)
-    parser.add_argument("--use_complete_graph", action="store_true", help="Use complete graph")
+    parser.add_argument("--graph_topology",       type=str,  choices=GRAPH_TOPOLOGIES,  default="dataset")
+    parser.add_argument("--star_center", type=int, default=0)
+    parser.add_argument(
+        "--num_nodes",
+        type=int,
+        default=None,
+        help="Generate star-graph samples with exactly this many nodes",
+    )
+    parser.add_argument(
+        "--shuffle_node_labels",
+        action="store_true",
+        help="Apply a new random node-label permutation to every star sample",
+    )
+    parser.add_argument("--use_complete_graph", action="store_true")
     # training
     parser.add_argument("--optimizer", type=str, default="adamw", help="Optimizer")
     parser.add_argument("--lr", type=float, default=5e-4, help="Learning rate")
@@ -111,6 +125,23 @@ if __name__ == '__main__':
     parser.add_argument("--devices", type=int, nargs="+", default=[0], help="Devices to use")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
+    if args.use_complete_graph:
+        if args.graph_topology != "dataset":
+            parser.error(
+                "--use_complete_graph cannot be combined with --graph_topology"
+            )
+        args.graph_topology = "complete"
+    if args.num_nodes is not None:
+        if args.graph_topology != "star":
+            parser.error("--num_nodes requires --graph_topology star")
+        if args.num_nodes < 2:
+            parser.error("--num_nodes must be at least 2")
+        if not 0 <= args.star_center < args.num_nodes:
+            parser.error(
+                "--star_center must be between 0 and --num_nodes - 1"
+            )
+    if args.shuffle_node_labels and args.num_nodes is None:
+        parser.error("--shuffle_node_labels requires --num_nodes")
 
     # load config
     cfg = load_cfg(args.cfg)
@@ -123,21 +154,69 @@ if __name__ == '__main__':
     cfg.TRAIN.BATCH_SIZE = args.batch_size
     cfg.TRAIN.MAX_EPOCHS = args.epochs
     cfg.RUN_NAME = cfg.RUN_NAME+"-hints"
+    if args.graph_topology != "dataset":
+        cfg.RUN_NAME += f"-{args.graph_topology}"
+        if args.graph_topology == "star":
+            cfg.RUN_NAME += f"-center{args.star_center}"
+            if args.num_nodes is not None:
+                cfg.RUN_NAME += f"-n{args.num_nodes}"
+            if args.shuffle_node_labels:
+                cfg.RUN_NAME += "-shuffled"
 
     # update model configs 
     cfg.MODEL.HIDDEN_DIM = args.hidden_dim
     cfg.MODEL.MSG_PASSING_STEPS = args.gnn_layers
     cfg.MODEL.GRU.ENABLE = args.enable_gru
-    if args.use_complete_graph:
+    if args.graph_topology == "complete":
         cfg.MODEL.PROCESSOR.KWARGS[0].update({"edge_dim": 128})
     
     logger.info("Starting run...")
     torch.set_float32_matmul_precision('medium')
+    logger.info(
+        f"Using {args.graph_topology} input graph topology"
+        + (
+            f" with center node {args.star_center}"
+            + (
+                f" and {args.num_nodes} nodes"
+                if args.num_nodes is not None
+                else ""
+            )
+            + (
+                " with labels reshuffled per sample"
+                if args.shuffle_node_labels
+                else ""
+            )
+            if args.graph_topology == "star"
+            else ""
+        )
+    )
 
     # load datasets
-    train_ds = CLRSDataset(algorithm=args.algorithm, split="train", num_samples=1000, use_complete_graph=args.use_complete_graph)
-    val_ds = CLRSDataset(algorithm=args.algorithm, split="val", num_samples=32, use_complete_graph=args.use_complete_graph)
-    test_ds = CLRSDataset(algorithm=args.algorithm, split="test", num_samples=32, use_complete_graph=args.use_complete_graph) 
+    dataset_kwargs = {
+        "algorithm": args.algorithm,
+        "graph_topology": args.graph_topology,
+        "star_center": args.star_center,
+        "num_nodes": args.num_nodes,
+        "shuffle_node_labels": args.shuffle_node_labels,
+    }
+    train_ds = CLRSDataset(
+        split="train",
+        num_samples=1000,
+        seed=args.seed,
+        **dataset_kwargs,
+    )
+    val_ds = CLRSDataset(
+        split="val",
+        num_samples=32,
+        seed=args.seed + 1,
+        **dataset_kwargs,
+    )
+    test_ds = CLRSDataset(
+        split="test",
+        num_samples=32,
+        seed=args.seed + 2,
+        **dataset_kwargs,
+    )
     specs = train_ds.specs
     is_weighted = hasattr(train_ds[0], "weights")
     if is_weighted and cfg.MODEL.PROCESSOR.NAME == "GINConv":

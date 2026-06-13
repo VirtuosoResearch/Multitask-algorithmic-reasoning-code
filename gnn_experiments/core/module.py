@@ -7,6 +7,7 @@ from loguru import logger
 from sklearn.metrics import f1_score
 
 from .models import EncodeProcessDecode
+from .models.single_pass import SinglePassTraceModel
 from .loss import CLRSLoss
 from .utils import stack_dicts
 from .metrics import calc_metrics
@@ -21,7 +22,10 @@ class SALSACLRSModel(pl.LightningModule):
         super().__init__()
         self.hparams.update(cfg)
         self.cfg = cfg
-        self.model = EncodeProcessDecode(specs, cfg)
+        if getattr(cfg.MODEL, "SINGLE_PASS", False):
+            self.model = SinglePassTraceModel(specs, cfg)
+        else:
+            self.model = EncodeProcessDecode(specs, cfg)
         self.loss = CLRSLoss(specs, cfg.TRAIN.LOSS.HIDDEN_LOSS_TYPE)
         self.step_output_cache = defaultdict(list)
         self.current_loader_idx = 0

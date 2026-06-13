@@ -30,25 +30,77 @@ def pointer_to_one_hot(pointer, n):
     """Convert a pointer to a one-hot vector."""
     return (np.arange(n) == pointer.reshape(-1, 1)).astype(float)
 
-def to_data(inputs, hints, outputs, use_hints=True, use_complete_graph=True):
+GRAPH_TOPOLOGIES = ("dataset", "complete", "star")
+
+
+def resolve_graph_topology(graph_topology=None, use_complete_graph=False):
+    """Resolve the requested topology while supporting the legacy flag."""
+    if graph_topology is None:
+        return "complete" if use_complete_graph else "dataset"
+    if graph_topology not in GRAPH_TOPOLOGIES:
+        raise ValueError(
+            f"Unknown graph topology {graph_topology!r}. "
+            f"Expected one of {GRAPH_TOPOLOGIES}."
+        )
+    if use_complete_graph and graph_topology != "complete":
+        raise ValueError(
+            "--use_complete_graph cannot be combined with "
+            f"graph_topology={graph_topology!r}."
+        )
+    return graph_topology
+
+
+def build_edge_index(inputs, hints, graph_topology, star_center=0):
+    """Build a directed PyG edge index for the selected topology."""
+    input_keywords = [dp.name for dp in inputs]
+    num_nodes = hints[0].data.shape[-1]
+
+    if graph_topology == "dataset" and "adj" in input_keywords:
+        adjacency = inputs[input_keywords.index("adj")].data[0]
+        graph = nx.from_numpy_array(adjacency, create_using=nx.DiGraph())
+        edges = list(graph.edges())
+    elif graph_topology == "star":
+        if not 0 <= star_center < num_nodes:
+            raise ValueError(
+                f"star_center must be in [0, {num_nodes - 1}], "
+                f"got {star_center}."
+            )
+        edges = []
+        for node in range(num_nodes):
+            if node != star_center:
+                edges.extend(((star_center, node), (node, star_center)))
+    else:
+        graph = nx.complete_graph(num_nodes, create_using=nx.DiGraph())
+        edges = list(graph.edges())
+
+    if not edges:
+        return torch.empty((2, 0), dtype=torch.long)
+    return torch.tensor(np.asarray(edges, dtype=np.int64).T, dtype=torch.long)
+
+
+def to_data(inputs, hints, outputs, use_hints=True, use_complete_graph=True,
+            graph_topology=None, star_center=0):
+    graph_topology = resolve_graph_topology(
+        graph_topology=graph_topology,
+        use_complete_graph=use_complete_graph,
+    )
+    uses_complete_graph = graph_topology == "complete"
     data_dict = {}
     input_attributes = []
     hint_attributes = []
     output_attributes = []
     data_dict['length'] = hints[0].data.shape[0]
     
-    # first get the edge index; create a fully connected graph 
-    input_keywords = [dp.name for dp in inputs]
-    if "adj" in input_keywords and (not use_complete_graph):
-        graph = nx.from_numpy_array(inputs[input_keywords.index("adj")].data[0], create_using=nx.DiGraph())
-    else:
-        graph = nx.complete_graph(hints[0].data.shape[-1], create_using=nx.DiGraph())
-    edge_list = np.array(list(graph.edges())).T
-    data_dict['edge_index'] = torch.tensor(edge_list, dtype=torch.long) # np.concatenate([edge_list, edge_list[::-1]], axis=1)
+    data_dict['edge_index'] = build_edge_index(
+        inputs=inputs,
+        hints=hints,
+        graph_topology=graph_topology,
+        star_center=star_center,
+    )
 
     # Parse inputs
     for dp in inputs:
-        if not use_complete_graph:
+        if not uses_complete_graph:
             if dp.name == "adj":
                 continue
             elif dp.name == "A":
@@ -145,6 +197,8 @@ def to_data(inputs, hints, outputs, use_hints=True, use_complete_graph=True):
 class CLRSDataset(Dataset):
     def __init__(self, root="./data/CLRS/", algorithm="insertion_sort", split="train",
                  num_samples = 1000, hints=True, ignore_all_hints=False, nickname=None, use_complete_graph=False,
+                 graph_topology=None, star_center=0, num_nodes=None,
+                 shuffle_node_labels=False, seed=0,
                  **kwargs):
         """ Dataset for CLRS problems.
 
@@ -156,36 +210,102 @@ class CLRSDataset(Dataset):
             hints (bool): Whether to use hints or not (hints are still loaded but not returned in the data dict)
             ignore_all_hints (bool): Whether to ignore all hints or not. If True, hints are not even generated, might be beneficial for memory.
             nickname (str): Optional nickname for the dataset (mainly intended for logging purposes).
+            graph_topology (str): Edge topology to use: 'dataset', 'complete', or 'star'.
+            star_center (int): Center node used when graph_topology is 'star'.
+            num_nodes (int): Generate fresh fixed-size star samples with this many nodes.
+            shuffle_node_labels (bool): Randomly relabel every generated star sample.
+            seed (int): Seed used when generating fixed-size samples.
             graph_generator (str): Name of the graph generator to use. 
             graph_generator_kwargs (dict): Keyword arguments to pass to the graph generator.
             max_cores (int): Maximum number of cores to use for multiprocessing. If -1, it is serial. If None, it is the number of cores on the machine (default: -1)
             **kwargs: Keyword arguments to pass to the algorithm sampler.
         """
-        self.data_dir = osp.join(root, "clrs_dataset", f"{algorithm}_{split}", "1.0.0")
-        if not os.path.exists(self.data_dir):
-            raise NotImplementedError(f"Data not found at {self.data_dir}. Please download the data.")
-        self.root = self.data_dir
         self.algorithm = algorithm
         self.split = split
         self.num_samples = num_samples
+        self.num_nodes = num_nodes
+        self.shuffle_node_labels = shuffle_node_labels
+        self.seed = seed
 
         self.specs = {}
 
         self.hints = hints
         self.ignore_all_hints = ignore_all_hints
         self.nickname = nickname
-        self.use_complete_graph = use_complete_graph
-        
-        super().__init__(root, None, None, None)
-        
-        _, _, specs = clrs.create_dataset(
-            folder=self.root, algorithm=self.algorithm,
-            split=self.split, batch_size=1)
-        self.specs = specs
+        self.graph_topology = resolve_graph_topology(
+            graph_topology=graph_topology,
+            use_complete_graph=use_complete_graph,
+        )
+        self.use_complete_graph = self.graph_topology == "complete"
+        self.star_center = star_center
+
+        if self.num_nodes is not None:
+            if self.graph_topology != "star":
+                raise ValueError(
+                    "num_nodes currently requires graph_topology='star'."
+                )
+            if self.num_nodes < 2:
+                raise ValueError("num_nodes must be at least 2 for a star graph.")
+            if not 0 <= self.star_center < self.num_nodes:
+                raise ValueError(
+                    f"star_center must be in [0, {self.num_nodes - 1}], "
+                    f"got {self.star_center}."
+                )
+            from sample_complexity.salsaclrs.sampler import build_sampler
+
+            self.sampler, self.specs = build_sampler(
+                algorithm,
+                graph_generator="star",
+                graph_generator_kwargs={
+                    "n": self.num_nodes,
+                    "center": self.star_center,
+                    "shuffle_labels": self.shuffle_node_labels,
+                },
+                seed=self.seed,
+                **kwargs,
+            )
+            self.data_dir = osp.join(
+                root,
+                "generated",
+                algorithm,
+                split,
+                (
+                    f"star_n_{self.num_nodes}_center_{self.star_center}"
+                    f"_shuffle_{int(self.shuffle_node_labels)}"
+                    f"_seed_{self.seed}"
+                ),
+            )
+            os.makedirs(self.data_dir, exist_ok=True)
+        else:
+            if self.shuffle_node_labels:
+                raise ValueError(
+                    "shuffle_node_labels requires generated star samples; "
+                    "set num_nodes."
+                )
+            self.data_dir = osp.join(
+                root,
+                "clrs_dataset",
+                f"{algorithm}_{split}",
+                "1.0.0",
+            )
+            if not os.path.exists(self.data_dir):
+                raise NotImplementedError(
+                    f"Data not found at {self.data_dir}. Please download the data."
+                )
+        dataset_root = self.data_dir if self.num_nodes is not None else root
+        super().__init__(dataset_root, None, None, None)
+
+        if self.num_nodes is None:
+            _, _, specs = clrs.create_dataset(
+                folder=self.root, algorithm=self.algorithm,
+                split=self.split, batch_size=1)
+            self.specs = specs
         self._update_specs()
 
     @property
     def raw_file_names(self):
+        if self.num_nodes is not None:
+            return []
         return [osp.join(self.data_dir, f"clrs_dataset-{self.split}.tfrecord-00000-of-00001")]
 
     @property
@@ -198,7 +318,18 @@ class CLRSDataset(Dataset):
 
     @property
     def processed_dir(self) -> str:
-        return osp.join(self.root, f'processed_{self.split}', f"{self.algorithm}" + ("_complete" if self.use_complete_graph else ""))
+        if self.num_nodes is not None:
+            return osp.join(self.root, "processed")
+        topology_suffix = ""
+        if self.graph_topology == "complete":
+            topology_suffix = "_complete"
+        elif self.graph_topology == "star":
+            topology_suffix = f"_star_center_{self.star_center}"
+        return osp.join(
+            self.root,
+            f'processed_{self.split}',
+            f"{self.algorithm}{topology_suffix}",
+        )
 
     def _update_specs(self):
         # get a batch
@@ -215,26 +346,44 @@ class CLRSDataset(Dataset):
         self.specs = specs
 
     def process(self):
-        train_ds, num_samples, specs = clrs.create_dataset(
-            folder=self.root, algorithm=self.algorithm,
-            split=self.split, batch_size=1)
-        self.specs = specs
-        
-        root_dir = f"./data/CLRS/processed_{self.split}"
-        processed_dir = osp.join(root_dir, f"{self.algorithm}" + ("_complete" if self.use_complete_graph else ""))
+        processed_dir = self.processed_dir
         if not osp.exists(processed_dir):
             os.makedirs(processed_dir)
 
-        for i, feedback in enumerate(train_ds.as_numpy_iterator()):
-            if i >= num_samples:
+        if self.num_nodes is not None:
+            samples = (self.sampler.next() for _ in range(self.num_samples))
+        else:
+            train_ds, _, specs = clrs.create_dataset(
+                folder=self.root,
+                algorithm=self.algorithm,
+                split=self.split,
+                batch_size=1,
+            )
+            self.specs = specs
+            samples = (
+                (
+                    feedback.features.inputs,
+                    feedback.outputs,
+                    feedback.features.hints,
+                )
+                for feedback in train_ds.as_numpy_iterator()
+            )
+
+        for i, (inputs, outputs, hints) in enumerate(samples):
+            if i >= self.num_samples:
                 break
-            features = feedback.features
-            outputs = feedback.outputs
-            inputs = features.inputs # inputs "key" and "pos"
-            hints = features.hints
-            lengths = features.lengths
-            
-            data = to_data(inputs, hints, outputs, use_complete_graph = self.use_complete_graph)
+            data = to_data(
+                inputs,
+                hints,
+                outputs,
+                use_complete_graph=self.use_complete_graph,
+                # Generated probes already contain the possibly relabeled star.
+                graph_topology=(
+                    "dataset" if self.num_nodes is not None
+                    else self.graph_topology
+                ),
+                star_center=self.star_center,
+            )
             torch.save(data, osp.join(processed_dir, f'data_{i}.pt'))
 
     def len(self):
