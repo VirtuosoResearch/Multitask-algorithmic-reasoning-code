@@ -44,7 +44,10 @@ import argparse
 import numpy as np
 import torch
 from loguru import logger
-import lightning.pytorch as pl
+try:
+    import lightning.pytorch as pl
+except ImportError:
+    import pytorch_lightning as pl
 
 import clrs
 from clrs._src.samplers import DfsSampler
@@ -216,6 +219,8 @@ def parse_args():
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--devices", type=int, nargs="+", default=[0])
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--run_name_suffix", type=str, default=None,
+                        help="Optional suffix used to keep checkpoints/results distinct")
     return parser.parse_args()
 
 
@@ -235,6 +240,8 @@ def main():
     cfg.TRAIN.BATCH_SIZE = args.batch_size
     cfg.TRAIN.MAX_EPOCHS = args.epochs
     cfg.RUN_NAME = cfg.RUN_NAME + "-star-dfs"
+    if args.run_name_suffix:
+        cfg.RUN_NAME += f"-{args.run_name_suffix}"
 
     cfg.MODEL.HIDDEN_DIM = args.hidden_dim
     cfg.MODEL.MSG_PASSING_STEPS = args.gnn_layers
