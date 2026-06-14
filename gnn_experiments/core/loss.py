@@ -14,6 +14,12 @@ def calculate_loss(mask, truth, pred, edge_index, type_, batch_assignment):
         return torch.mean(F.binary_cross_entropy_with_logits(pred, truth, reduction='none') * mask)
     elif type_ == "mask_one":
         # cross entropy loss, pred is logsoftmaxed
+        if pred.shape != truth.shape or pred.shape != mask.shape:
+            raise ValueError(
+                "mask_one shape mismatch: "
+                f"pred={tuple(pred.shape)}, truth={tuple(truth.shape)}, "
+                f"mask={tuple(mask.shape)}"
+            )
         logits = truth*pred*mask
         return (-torch_scatter.scatter(logits, batch_assignment, dim=0)).mean()
     elif type_ == "categorical":
