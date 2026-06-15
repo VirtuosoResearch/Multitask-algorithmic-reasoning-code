@@ -211,9 +211,15 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=100)
 
     # model
+    parser.add_argument(
+        "--execution_mode",
+        choices=("recurrent", "direct_output", "single_pass"),
+        default="single_pass",
+        help="Recurrently execute DFS, predict only pi, or predict the full trace once",
+    )
     parser.add_argument("--hidden_dim", type=int, default=128)
     parser.add_argument("--gnn_layers", type=int, default=4,
-                        help="Number of message-passing rounds (single forward pass)")
+                        help="Number of message-passing steps/layers")
     parser.add_argument("--enable_gru", action="store_true")
 
     parser.add_argument("--runs", type=int, default=1)
@@ -239,14 +245,19 @@ def main():
     cfg.TRAIN.LOSS.HIDDEN_LOSS_WEIGHT = args.loss_weight_hidden
     cfg.TRAIN.BATCH_SIZE = args.batch_size
     cfg.TRAIN.MAX_EPOCHS = args.epochs
-    cfg.RUN_NAME = cfg.RUN_NAME + "-star-dfs"
+    cfg.MODEL.EXECUTION_MODE = args.execution_mode
+    cfg.RUN_NAME += f"-star-dfs-{args.execution_mode.replace('_', '-')}"
     if args.run_name_suffix:
         cfg.RUN_NAME += f"-{args.run_name_suffix}"
 
     cfg.MODEL.HIDDEN_DIM = args.hidden_dim
     cfg.MODEL.MSG_PASSING_STEPS = args.gnn_layers
-    cfg.MODEL.GRU.ENABLE = args.enable_gru
-    cfg.MODEL.SINGLE_PASS = True  # predict the whole trace in one pass (node classification)
+    cfg.MODEL.SINGLE_PASS = args.execution_mode == "single_pass"
+    if args.execution_mode == "direct_output":
+        cfg.TRAIN.LOSS.HINT_LOSS_WEIGHT = 0.0
+        cfg.MODEL.GRU.ENABLE = False
+    else:
+        cfg.MODEL.GRU.ENABLE = args.enable_gru
     if args.use_complete_graph:
         cfg.MODEL.PROCESSOR.KWARGS[0].update({"edge_dim": 128})
 
@@ -266,10 +277,12 @@ def main():
                              nickname=f"test_n{test_min_nodes}-{test_max_nodes}")
     specs = train_ds.specs
 
-    # Heads predict the whole trajectory; size them to the longest T = 3*max_n
-    # seen anywhere (train or test), then slice per batch in the model.
-    cfg.MODEL.TRACE_LEN = max(train_ds.max_length, val_ds.max_length, test_ds.max_length)
-    logger.info(f"max DFS trajectory length (TRACE_LEN) = {cfg.MODEL.TRACE_LEN}")
+    if args.execution_mode == "single_pass":
+        cfg.MODEL.TRACE_LEN = max(
+            train_ds.max_length, val_ds.max_length, test_ds.max_length
+        )
+        logger.info(f"Max DFS trajectory length: {cfg.MODEL.TRACE_LEN}")
+    logger.info(f"Execution mode: {args.execution_mode}")
     logger.info(f"Specs: {specs}")
     print("Using processor", cfg.MODEL.PROCESSOR.NAME)
 

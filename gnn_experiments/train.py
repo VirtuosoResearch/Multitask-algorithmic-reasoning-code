@@ -117,6 +117,12 @@ if __name__ == '__main__':
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
     parser.add_argument("--epochs", type=int, default=200, help="Number of epochs")
     # model
+    parser.add_argument(
+        "--execution_mode",
+        choices=("recurrent", "direct_output"),
+        default="recurrent",
+        help="Run the algorithm trajectory or predict final outputs directly",
+    )
     parser.add_argument("--hidden_dim", type=int, default=128, help="Hidden dimension")
     parser.add_argument("--gnn_layers", type=int, default=2, help="Message passing steps")
     parser.add_argument("--enable_gru", action="store_true", help="Enable GRU")
@@ -153,7 +159,8 @@ if __name__ == '__main__':
     cfg.TRAIN.LOSS.HIDDEN_LOSS_WEIGHT = args.loss_weight_hidden
     cfg.TRAIN.BATCH_SIZE = args.batch_size
     cfg.TRAIN.MAX_EPOCHS = args.epochs
-    cfg.RUN_NAME = cfg.RUN_NAME+"-hints"
+    cfg.MODEL.EXECUTION_MODE = args.execution_mode
+    cfg.RUN_NAME += f"-{args.execution_mode.replace('_', '-')}"
     if args.graph_topology != "dataset":
         cfg.RUN_NAME += f"-{args.graph_topology}"
         if args.graph_topology == "star":
@@ -166,11 +173,16 @@ if __name__ == '__main__':
     # update model configs 
     cfg.MODEL.HIDDEN_DIM = args.hidden_dim
     cfg.MODEL.MSG_PASSING_STEPS = args.gnn_layers
-    cfg.MODEL.GRU.ENABLE = args.enable_gru
+    if args.execution_mode == "direct_output":
+        cfg.TRAIN.LOSS.HINT_LOSS_WEIGHT = 0.0
+        cfg.MODEL.GRU.ENABLE = False
+    else:
+        cfg.MODEL.GRU.ENABLE = args.enable_gru
     if args.graph_topology == "complete":
         cfg.MODEL.PROCESSOR.KWARGS[0].update({"edge_dim": 128})
     
     logger.info("Starting run...")
+    logger.info(f"Execution mode: {cfg.MODEL.EXECUTION_MODE}")
     torch.set_float32_matmul_precision('medium')
     logger.info(
         f"Using {args.graph_topology} input graph topology"

@@ -5,18 +5,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXPERIMENT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 REPO_ROOT="$(cd "${EXPERIMENT_DIR}/.." && pwd)"
 
-NUM_TRAINS="${NUM_TRAINS:-2000 5000 10000}"
-NODE_COUNTS="${NODE_COUNTS:-100 1000 10000 100000}"
+NUM_TRAINS="${NUM_TRAINS:-2000}"
+NODE_COUNTS="${NODE_COUNTS:-10 20 50 100}" # 1000 10000 100000
 GNN_LAYERS="${GNN_LAYERS:-1 2 3}"
 NUM_VAL="${NUM_VAL:-256}"
 NUM_TEST="${NUM_TEST:-256}"
-EPOCHS="${EPOCHS:-100}"
+EPOCHS="${EPOCHS:-50}"
 DEVICE="${DEVICE:-0}"
 
 cd "${EXPERIMENT_DIR}"
 
 for num_train in ${NUM_TRAINS}; do
   for num_nodes in ${NODE_COUNTS}; do
+    for mode in "single_pass" "recurrent"; do
     for layers in ${GNN_LAYERS}; do
       run_name="train${num_train}-n${num_nodes}-layers${layers}"
       echo "Running ${run_name}"
@@ -34,7 +35,9 @@ for num_train in ${NUM_TRAINS}; do
           --gnn_layers "${layers}" \
           --epochs "${EPOCHS}" \
           --devices "${DEVICE}" \
-          --run_name_suffix "${run_name}"
+          --run_name_suffix "${run_name}" \
+          --execution_mode ${mode}
     done
   done
+done
 done

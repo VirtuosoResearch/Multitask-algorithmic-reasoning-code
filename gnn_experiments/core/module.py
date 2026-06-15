@@ -6,7 +6,7 @@ from collections import defaultdict
 from loguru import logger
 from sklearn.metrics import f1_score
 
-from .models import EncodeProcessDecode
+from .models import DirectOutputModel, EncodeProcessDecode
 from .models.single_pass import SinglePassTraceModel
 from .loss import CLRSLoss
 from .utils import stack_dicts
@@ -22,10 +22,17 @@ class SALSACLRSModel(pl.LightningModule):
         super().__init__()
         self.hparams.update(cfg)
         self.cfg = cfg
+        execution_mode = getattr(cfg.MODEL, "EXECUTION_MODE", "recurrent")
         if getattr(cfg.MODEL, "SINGLE_PASS", False):
             self.model = SinglePassTraceModel(specs, cfg)
-        else:
+        elif execution_mode == "recurrent":
             self.model = EncodeProcessDecode(specs, cfg)
+        elif execution_mode == "direct_output":
+            self.model = DirectOutputModel(specs, cfg)
+        else:
+            raise ValueError(
+                f"Unknown execution mode: {execution_mode}"
+            )
         self.loss = CLRSLoss(specs, cfg.TRAIN.LOSS.HIDDEN_LOSS_TYPE)
         self.step_output_cache = defaultdict(list)
         self.current_loader_idx = 0
@@ -129,4 +136,3 @@ class SALSACLRSModel(pl.LightningModule):
                 raise NotImplementedError(f"Scheduler {self.cfg.TRAIN.SCHEDULER.NAME} not implemented")
 
         return out
-
