@@ -24,12 +24,9 @@ logger.add(sys.stderr, level="INFO")
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
-''' 
-TODO:
-- Why the NodePointerDecoder is defined on the edges 
-- Why the Depth first search has no input of the source nodes: 's_prev': ('hint', 'node', 'pointer'), 's': ('hint', 'node', 'mask_one'), 'u': ('hint', 'node', 'mask_one'), 'v': ('hint', 'node', 'mask_one'), 's_last': ('hint', 'node', 'mask_one')}
-- Calculate loss on multiple outputs
-'''
+
+def dataset_max_length(dataset):
+    return max(int(dataset[i].length) for i in range(len(dataset)))
 
 
 def train(model, datamodule, cfg, specs, seed=42, checkpoint_dir=None, devices=[0], run_name=None):
@@ -95,6 +92,9 @@ if __name__ == '__main__':
     # datasets
     parser.add_argument("--algorithm", type=str, required=True)
     parser.add_argument("--graph_topology",       type=str,  choices=GRAPH_TOPOLOGIES,  default="dataset")
+    parser.add_argument("--num_train", type=int, default=1000, help="Number of train samples")
+    parser.add_argument("--num_val", type=int, default=32, help="Number of validation samples")
+    parser.add_argument("--num_test", type=int, default=32, help="Number of test samples")
     parser.add_argument("--star_center", type=int, default=0)
     parser.add_argument(
         "--num_nodes",
@@ -119,9 +119,9 @@ if __name__ == '__main__':
     # model
     parser.add_argument(
         "--execution_mode",
-        choices=("recurrent", "direct_output"),
+        choices=("recurrent", "direct_output", "single_pass"),
         default="recurrent",
-        help="Run the algorithm trajectory or predict final outputs directly",
+        help="Run the algorithm trajectory, predict the full trace once, or predict final outputs directly",
     )
     parser.add_argument("--hidden_dim", type=int, default=128, help="Hidden dimension")
     parser.add_argument("--gnn_layers", type=int, default=2, help="Message passing steps")
@@ -173,6 +173,7 @@ if __name__ == '__main__':
     # update model configs 
     cfg.MODEL.HIDDEN_DIM = args.hidden_dim
     cfg.MODEL.MSG_PASSING_STEPS = args.gnn_layers
+    cfg.MODEL.SINGLE_PASS = args.execution_mode == "single_pass"
     if args.execution_mode == "direct_output":
         cfg.TRAIN.LOSS.HINT_LOSS_WEIGHT = 0.0
         cfg.MODEL.GRU.ENABLE = False
@@ -213,23 +214,33 @@ if __name__ == '__main__':
     }
     train_ds = CLRSDataset(
         split="train",
-        num_samples=1000,
+        num_samples=args.num_train,
         seed=args.seed,
         **dataset_kwargs,
     )
     val_ds = CLRSDataset(
         split="val",
-        num_samples=32,
+        num_samples=args.num_val,
         seed=args.seed + 1,
         **dataset_kwargs,
     )
     test_ds = CLRSDataset(
         split="test",
-        num_samples=32,
+        num_samples=args.num_test,
         seed=args.seed + 2,
         **dataset_kwargs,
     )
     specs = train_ds.specs
+    if args.execution_mode == "single_pass":
+        train_max_length = dataset_max_length(train_ds)
+        val_max_length = dataset_max_length(val_ds)
+        test_max_length = dataset_max_length(test_ds)
+        cfg.MODEL.TRACE_LEN = max(train_max_length, val_max_length, test_max_length)
+        logger.info(
+            "Trace lengths: train={}, val={}, test={}, TRACE_LEN={}".format(
+                train_max_length, val_max_length, test_max_length, cfg.MODEL.TRACE_LEN
+            )
+        )
     is_weighted = hasattr(train_ds[0], "weights")
     if is_weighted and cfg.MODEL.PROCESSOR.NAME == "GINConv":
         cfg.MODEL.PROCESSOR.NAME = "GINEConv"
