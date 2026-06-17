@@ -19,6 +19,7 @@ from core.models import EncodeProcessDecode, MultitaskEncodeProcessDecode, MMOE_
 import numpy as np
 
 from data_utils.multitask_data_loader import MultiCLRSDataModule
+from data_utils.multitask_data_loader_sample_complexity import MultiCLRSDataModuleSampleComplexity
 from core.mtl_module import MultiCLRSModel
 
 logger.remove()
@@ -27,8 +28,13 @@ logger.add(sys.stderr, level="INFO")
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
-def train(model, datamodule, cfg, seed=42, checkpoint_dir=None, devices=[0], algorithms=[], run_name=None):
+def train(model, datamodule, cfg, seed=42, checkpoint_dir=None, devices=[0], algorithms=[], run_name=None, node=None, num_samples=None, use_wandb=False):
     callbacks = []
+    algorithm_str = "_".join(algorithms)[:100]
+    if use_wandb:
+        wandblogger = pl.loggers.WandbLogger(project=cfg.LOGGING.WANDB.PROJECT, entity=cfg.LOGGING.WANDB.ENTITY, group=cfg.LOGGING.WANDB.GROUP, name=f"{run_name}-{algorithm_str}-{node}-{num_samples}")
+    else:
+        wandblogger = None
     # checkpointing
     if checkpoint_dir is not None:
         ckpt_cbk = pl.callbacks.ModelCheckpoint(
@@ -46,7 +52,7 @@ def train(model, datamodule, cfg, seed=42, checkpoint_dir=None, devices=[0], alg
         enable_checkpointing=True,
         callbacks=[ckpt_cbk, early_stop_cbk],
         max_epochs=cfg.TRAIN.MAX_EPOCHS,
-        logger=None,
+        logger=wandblogger,
         accelerator="gpu",
         log_every_n_steps=5,
         gradient_clip_val=cfg.TRAIN.GRADIENT_CLIP_VAL,
@@ -127,6 +133,14 @@ if __name__ == '__main__':
     parser.add_argument("--load_layers", type=int, nargs="+", default=None, help="Load layers")
 
     parser.add_argument("--save_name", type=str, default="none")
+
+    parser.add_argument("--data_dir", type=str, help="Path to data directory")
+    parser.add_argument("--enable_wandb", action="store_true", help="Enable wandb logging")
+    parser.add_argument("--wandb_project", type=str, default="mtl_graph", help="Wandb project name")
+    parser.add_argument("--wandb_entity", type=str, default="", help="Wandb entity name")
+    parser.add_argument("--num_samples", type=int, default=1000, help="Number of samples per task")
+    parser.add_argument("--node", type=int, default=4, help="Number of nodes in the graph")
+    parser.add_argument("--graph_batch_dir", type=str, default="graph_batches", help="Graph batch directory")
     args = parser.parse_args()
 
     # load config
@@ -139,6 +153,8 @@ if __name__ == '__main__':
     cfg.TRAIN.BATCH_SIZE = args.batch_size
     cfg.TRAIN.MAX_EPOCHS = args.epochs
     cfg.RUN_NAME = cfg.RUN_NAME+"-hints"
+    cfg.LOGGING.WANDB.PROJECT = args.wandb_project
+    cfg.LOGGING.WANDB.ENTITY = args.wandb_entity
 
     # update model configs 
     cfg.MODEL.HIDDEN_DIM = args.hidden_dim
@@ -153,7 +169,10 @@ if __name__ == '__main__':
 
     # load datasets
     algorithm_str = "_".join(args.algorithms)[:100]
-    data_module = MultiCLRSDataModule(algorithms=args.algorithms, batch_size=cfg.TRAIN.BATCH_SIZE)
+    # Replaced this to use randomly generated graphs
+    # data_module = MultiCLRSDataModule(algorithms=args.algorithms, batch_size=cfg.TRAIN.BATCH_SIZE)
+    data_module = MultiCLRSDataModuleSampleComplexity(algorithms=args.algorithms, data_dir=args.data_dir, num_samples=args.num_samples, node=args.node, 
+                                                      use_complete_graph=args.use_complete_graph, batch_size=cfg.TRAIN.BATCH_SIZE, graph_batch_dir="./shared_graph_cache")
     data_module.setup()
     task_to_specs = data_module.task_to_specs
     print("Using processor", cfg.MODEL.PROCESSOR.NAME)
@@ -218,7 +237,7 @@ if __name__ == '__main__':
 
         ckpt_dir = "./saved/"
         results = train(model, data_module, cfg, seed = run_seed, checkpoint_dir=ckpt_dir, devices=args.devices, algorithms=args.algorithms,
-                        run_name=cfg.RUN_NAME + f"-run{run}" + (f"-{args.save_name}" if args.save_name != "none" else ""))
+                        run_name=cfg.RUN_NAME + f"-run{run}" + (f"-{args.save_name}" if args.save_name != "none" else ""), node=args.node, num_samples=args.num_samples, use_wandb=args.enable_wandb)
 
         for key in results:
             if key not in metrics:

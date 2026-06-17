@@ -97,8 +97,18 @@ class _OneStarDFSSampler(DfsSampler):
         return [self._adjacency.copy()]
 
 
+def apply_node_index_encoding(data, node_index_encoding):
+    """Control whether the model sees CLRS's node-order/index feature."""
+    if node_index_encoding == "clrs_pos":
+        return data
+    if node_index_encoding == "constant":
+        data.pos = torch.zeros_like(data.pos)
+        return data
+    raise ValueError(f"Unknown node_index_encoding: {node_index_encoding}")
+
+
 def make_star_dfs_data(n, rng, shuffle_labels=True, use_hints=True,
-                       use_complete_graph=False):
+                       use_complete_graph=False, node_index_encoding="clrs_pos"):
     """Build one `CLRSData` graph: a star + its DFS probes (true length T).
 
     The star is built canonically (center = node 0). If ``shuffle_labels``, the
@@ -113,13 +123,14 @@ def make_star_dfs_data(n, rng, shuffle_labels=True, use_hints=True,
         A = A[np.ix_(perm, perm)]
     sampler = _OneStarDFSSampler(A)
     feedback = sampler.next(batch_size=1)
-    return to_data(
+    data = to_data(
         feedback.features.inputs,
         feedback.features.hints,
         feedback.outputs,
         use_hints=use_hints,
         use_complete_graph=use_complete_graph,
     )
+    return apply_node_index_encoding(data, node_index_encoding)
 
 
 def build_specs(raw_specs, sample):
@@ -153,15 +164,18 @@ class StarDFSDataset(torch.utils.data.Dataset):
     """
 
     def __init__(self, num_graphs, min_nodes, max_nodes, seed,
-                 shuffle_labels=True, use_complete_graph=False, nickname=None):
+                 shuffle_labels=True, use_complete_graph=False,
+                 node_index_encoding="clrs_pos", nickname=None):
         rng = np.random.default_rng(seed)
         self.data_list = []
         for _ in range(num_graphs):
             n = int(rng.integers(min_nodes, max_nodes + 1))
             self.data_list.append(
                 make_star_dfs_data(n, rng, shuffle_labels=shuffle_labels,
-                                   use_complete_graph=use_complete_graph))
+                                   use_complete_graph=use_complete_graph,
+                                   node_index_encoding=node_index_encoding))
         self.nickname = nickname
+        self.node_index_encoding = node_index_encoding
         self.specs = build_specs(clrs.SPECS["dfs"], self.data_list[0])
         self.max_length = max(int(d.length) for d in self.data_list)
 
@@ -196,6 +210,9 @@ def parse_args():
     parser.add_argument("--shuffle_labels", action=argparse.BooleanOptionalAction, default=True,
                         help="Randomly permute each graph's node labels (default on). "
                              "Off => canonical stars with center = node 0.")
+    parser.add_argument("--node_index_encoding", choices=("clrs_pos", "constant"),
+                        default="clrs_pos",
+                        help="Use CLRS pos node-order input or replace it with a constant.")
     parser.add_argument("--use_complete_graph", action="store_true",
                         help="Message-pass on the complete graph instead of the star edges")
 
@@ -246,7 +263,8 @@ def main():
     cfg.TRAIN.BATCH_SIZE = args.batch_size
     cfg.TRAIN.MAX_EPOCHS = args.epochs
     cfg.MODEL.EXECUTION_MODE = args.execution_mode
-    cfg.RUN_NAME += f"-star-dfs-{args.execution_mode.replace('_', '-')}"
+    pos_suffix = args.node_index_encoding.replace("clrs_pos", "clrs")
+    cfg.RUN_NAME += f"-star-dfs-{args.execution_mode.replace('_', '-')}-pos-{pos_suffix}"
     if args.run_name_suffix:
         cfg.RUN_NAME += f"-{args.run_name_suffix}"
 
@@ -267,15 +285,28 @@ def main():
     # Distinct seeds -> disjoint (unseen) train / val / test instances.
     train_ds = StarDFSDataset(args.num_train, args.min_nodes, args.max_nodes,
                               seed=args.seed, shuffle_labels=args.shuffle_labels,
-                              use_complete_graph=args.use_complete_graph, nickname="train")
+                              use_complete_graph=args.use_complete_graph,
+                              node_index_encoding=args.node_index_encoding,
+                              nickname="train")
     val_ds = StarDFSDataset(args.num_val, args.min_nodes, args.max_nodes,
                             seed=args.seed + 1, shuffle_labels=args.shuffle_labels,
-                            use_complete_graph=args.use_complete_graph, nickname="val")
+                            use_complete_graph=args.use_complete_graph,
+                            node_index_encoding=args.node_index_encoding,
+                            nickname="val")
     test_ds = StarDFSDataset(args.num_test, test_min_nodes, test_max_nodes,
                              seed=args.seed + 2, shuffle_labels=args.shuffle_labels,
                              use_complete_graph=args.use_complete_graph,
+                             node_index_encoding=args.node_index_encoding,
                              nickname=f"test_n{test_min_nodes}-{test_max_nodes}")
     specs = train_ds.specs
+    first_pos = train_ds.data_list[0].pos
+    logger.info(
+        "Node index encoding: {}; first train pos unique values: {}; min: {:.4f}; max: {:.4f}",
+        args.node_index_encoding,
+        int(torch.unique(first_pos).numel()),
+        float(first_pos.min()),
+        float(first_pos.max()),
+    )
 
     if args.execution_mode == "single_pass":
         cfg.MODEL.TRACE_LEN = max(

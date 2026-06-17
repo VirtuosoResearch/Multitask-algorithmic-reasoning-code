@@ -21,3 +21,8 @@ clrs/
 !clrs_experiments/clrs/
 saved/
 deprecated_/
+
+*/graph_batches/
+*/*/graph_batches/
+*/shared_graph_cache/
+*/*/shared_graph_cache/
