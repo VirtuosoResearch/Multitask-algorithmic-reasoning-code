@@ -5,8 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXPERIMENT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 REPO_ROOT="$(cd "${EXPERIMENT_DIR}/.." && pwd)"
 
-NUM_TRAINS="${NUM_TRAINS:-2000}"
-NODE_COUNTS="${NODE_COUNTS:-50 200}" # 1000 10000 100000
+NUM_TRAINS="${NUM_TRAINS:-1000}"
+NODE_COUNTS="${NODE_COUNTS:-20 50 100}" # 1000 10000 100000
 GNN_LAYERS="${GNN_LAYERS:-1 2 3}"
 NUM_VAL="${NUM_VAL:-256}"
 NUM_TEST="${NUM_TEST:-256}"
@@ -36,7 +36,8 @@ for num_train in ${NUM_TRAINS}; do
           --epochs "${EPOCHS}" \
           --devices "${DEVICE}" \
           --run_name_suffix "${run_name}" \
-          --execution_mode ${mode}
+          --execution_mode ${mode} \
+          --runs 2
     done
   done
 done
